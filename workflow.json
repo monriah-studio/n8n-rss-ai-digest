@@ -1,0 +1,346 @@
+{
+  "name": "RSS → AI daily digest (free)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## RSS → AI daily digest (free)\n1. Edit the feeds, keywords and email addresses in **Config (edit me)**.\n2. Open **Gemini (free tier)** and create a *Google Gemini (PaLM) API* credential with your own free key from Google AI Studio.\n3. Open **Send digest email** and add an SMTP credential (or disable it and enable **Post to webhook**).\n4. Click **Execute workflow** to test, then switch the workflow to **Active**.\n\nFree option B: connect **Groq (free tier, optional)** to the LLM node instead of Gemini.\n\nMIT license · github.com/monriah-studio/n8n-rss-ai-digest",
+        "height": 320,
+        "width": 620
+      },
+      "id": "d6ea51f3-90a3-5e9e-8da1-f1e6d2d984ae",
+      "name": "Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Want Groq instead?\nDelete the link from Gemini, drag Groq's model connector onto **Summarize with LLM**, and add a Groq API credential (free key at console.groq.com). Only one model can be connected.",
+        "height": 160,
+        "width": 420,
+        "color": 5
+      },
+      "id": "3856c131-1dba-5067-ae2c-5eb7cbbfaf43",
+      "name": "Groq note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        600,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "id": "3e72a976-a789-50ff-badb-5f8a3ca7283b",
+      "name": "Every day at 7:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== EDIT ME =====\n// Feeds to read (RSS 2.0 or Atom). Add or remove lines.\nconst feedUrls = [\n  'https://hnrss.org/frontpage',\n  'https://feeds.bbci.co.uk/news/technology/rss.xml',\n  'https://www.theverge.com/rss/index.xml',\n];\n\nconst config = {\n  // Keep items whose title or snippet contains ANY of these words (case-insensitive).\n  // Leave the list empty to keep everything.\n  keywords: ['AI', 'open source', 'LLM'],\n  // Ignore items older than this many hours (feeds without dates are kept).\n  lookbackHours: 24,\n  // Max items taken from each feed, and max items in one digest.\n  maxItemsPerFeed: 15,\n  maxItemsInDigest: 25,\n  // Email settings (used by the \"Send digest email\" node).\n  digestTitle: 'Daily RSS digest',\n  emailTo: 'you@example.com',\n  emailFrom: 'digest@example.com',\n  // Webhook settings (used by the \"Post to webhook\" node, disabled by default).\n  // Works with Slack/Discord/Teams incoming webhooks or any URL that accepts JSON.\n  webhookUrl: 'https://example.com/your-webhook',\n};\n// ===== END EDIT ME =====\n\nreturn feedUrls.map((url) => ({ json: { url, ...config } }));"
+      },
+      "id": "9be8d9a4-c47f-57ee-8186-6da321483faf",
+      "name": "Config (edit me)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "id": "a443a49e-a5b1-5c62-89e7-5d67c1a16508",
+      "name": "Read RSS feeds",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.2,
+      "position": [
+        -220,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Clean up RSS items, drop failed feeds, keep only recent items that match a keyword.\nconst cfg = $('Config (edit me)').first().json;\n// Whole-word, case-insensitive keyword match (\"AI\" matches \"AI model\", not \"said\").\nconst keywords = (cfg.keywords || []).map((k) => String(k).trim()).filter(Boolean)\n  .map((k) => new RegExp('(^|[^\\\\p{L}\\\\p{N}])' + k.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '($|[^\\\\p{L}\\\\p{N}])', 'iu'));\nconst cutoff = Date.now() - (Number(cfg.lookbackHours) || 24) * 3600 * 1000;\nconst perFeed = {};\nconst seen = new Set();\nconst out = [];\n\nconst strip = (s) => String(s || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\\s+/g, ' ').trim();\n\nfor (const [idx, item] of $input.all().entries()) {\n  const j = item.json;\n  if (j.error || !j.link || !j.title) continue;          // failed feed or empty item\n  const link = String(j.link).trim();\n  if (seen.has(link)) continue;                           // duplicate inside this run\n  const published = j.isoDate || j.pubDate || null;\n  const ts = published ? Date.parse(published) : NaN;\n  if (!Number.isNaN(ts) && ts < cutoff) continue;         // too old\n  const snippet = strip(j.contentSnippet || j.content || j.summary || '').slice(0, 400);\n  const title = strip(j.title);\n  const hay = title + ' ' + snippet;\n  if (keywords.length && !keywords.some((re) => re.test(hay))) continue;\n  // Which feed did this item come from? (paired item -> Config row), fallback: link host.\n  let feedUrl = '';\n  try { feedUrl = $('Config (edit me)').itemMatching(idx).json.url || ''; } catch (e) {}\n  const host = (u) => ((String(u).match(/^https?:\\/\\/([^\\/?#]+)/i) || [])[1] || '').replace(/^www\\./, '');\n  const source = host(feedUrl) || host(link);\n  perFeed[feedUrl || source] = (perFeed[feedUrl || source] || 0) + 1;\n  if (perFeed[feedUrl || source] > (Number(cfg.maxItemsPerFeed) || 15)) continue;\n  seen.add(link);\n  out.push({ json: { title, link, source, published: Number.isNaN(ts) ? null : new Date(ts).toISOString(), snippet } });\n}\nreturn out;"
+      },
+      "id": "6b05c470-d2d3-586e-9183-7443b53e973a",
+      "name": "Clean + keyword filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "removeItemsSeenInPreviousExecutions",
+        "dedupeValue": "={{ $json.link }}",
+        "options": {}
+      },
+      "id": "2de46cee-b6d5-50e0-bca6-159614ec2481",
+      "name": "Skip items sent before",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sort newest first, cap the digest size and build one prompt for the LLM.\nconst cfg = $('Config (edit me)').first().json;\nconst items = $input.all().map((i) => i.json)\n  .sort((a, b) => (b.published || '').localeCompare(a.published || ''))\n  .slice(0, Number(cfg.maxItemsInDigest) || 25);\nconst list = items.map((it, n) => `[${n + 1}] ${it.title} (${it.source})\\n${it.snippet}`).join('\\n\\n');\nconst prompt = `Here are ${items.length} new items from my RSS feeds.\\n\\n${list}\\n\\n` +\n  `Write a short daily digest in plain text:\\n` +\n  `1. One sentence on the main theme of the day.\\n` +\n  `2. Then 3-7 bullet points (\"- \"), each grouping related items and citing them by number like [2][5].\\n` +\n  `Do not invent facts that are not in the items. No preamble.`;\nreturn [{ json: { prompt, items, count: items.length } }];"
+      },
+      "id": "64367617-a32d-5b77-aa83-d7925793371e",
+      "name": "Build prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a concise news editor. You summarise RSS items accurately, group related stories, and cite item numbers. You never add facts that are not in the items."
+            }
+          ]
+        }
+      },
+      "id": "abf2a7c9-44fd-5dfe-930f-6d9daa4322ff",
+      "name": "Summarize with LLM",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "25ea41e9-ac1a-5f35-b210-c17101db3582",
+      "name": "Gemini (free tier)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        640,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "3248f4fd-b9e1-5d78-b53a-72342eb9eea5",
+      "name": "Groq (free tier, optional)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        820,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the LLM text + item list into an HTML email and a JSON payload.\nconst cfg = $('Config (edit me)').first().json;\nconst { items, count } = $('Build prompt').first().json;\nconst summary = String($json.text || $json.output || '').trim();\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst date = new Date().toISOString().slice(0, 10);\n\nconst lines = summary.split('\\n').map((l) => l.trim()).filter(Boolean);\nlet html = `<h2>${esc(cfg.digestTitle)} - ${date}</h2>`;\nlet inList = false;\nfor (const l of lines) {\n  if (/^[-*•]\\s+/.test(l)) {\n    if (!inList) { html += '<ul>'; inList = true; }\n    html += `<li>${esc(l.replace(/^[-*•]\\s+/, ''))}</li>`;\n  } else {\n    if (inList) { html += '</ul>'; inList = false; }\n    html += `<p>${esc(l)}</p>`;\n  }\n}\nif (inList) html += '</ul>';\nhtml += `<h3>Sources (${count})</h3><ol>` +\n  items.map((it) => `<li><a href=\"${esc(it.link)}\">${esc(it.title)}</a> <small>(${esc(it.source)})</small></li>`).join('') +\n  '</ol><p><small>Sent by n8n-rss-ai-digest.</small></p>';\n\nconst text = `${cfg.digestTitle} - ${date}\\n\\n${summary}\\n\\nSources:\\n` +\n  items.map((it, n) => `[${n + 1}] ${it.title} - ${it.link}`).join('\\n');\n\nreturn [{ json: {\n  subject: `${cfg.digestTitle} - ${date} (${count} items)`,\n  html, text, summary, items, date,\n  emailTo: cfg.emailTo, emailFrom: cfg.emailFrom, webhookUrl: cfg.webhookUrl,\n} }];"
+      },
+      "id": "7a1c0454-5d6c-5586-a3d2-f6e89151d615",
+      "name": "Format digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.emailFrom }}",
+        "toEmail": "={{ $json.emailTo }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "both",
+        "text": "={{ $json.text }}",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "3fac5438-acdf-55e1-b615-8531397fed03",
+      "name": "Send digest email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1240,
+        200
+      ],
+      "webhookId": "eeb275a0-52d5-5137-a2cc-e26eb08b8523"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.webhookUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text, content: $json.text.slice(0, 1900), subject: $json.subject, summary: $json.summary, items: $json.items, date: $json.date }) }}",
+        "options": {}
+      },
+      "id": "b3e88a01-20ce-5225-9945-8446b8268753",
+      "name": "Post to webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1240,
+        400
+      ],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Build prompt": {
+      "main": [
+        [
+          {
+            "node": "Summarize with LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize with LLM": {
+      "main": [
+        [
+          {
+            "node": "Format digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini (free tier)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarize with LLM",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format digest": {
+      "main": [
+        [
+          {
+            "node": "Send digest email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post to webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every day at 7:00": {
+      "main": [
+        [
+          {
+            "node": "Config (edit me)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config (edit me)": {
+      "main": [
+        [
+          {
+            "node": "Read RSS feeds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read RSS feeds": {
+      "main": [
+        [
+          {
+            "node": "Clean + keyword filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean + keyword filter": {
+      "main": [
+        [
+          {
+            "node": "Skip items sent before",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip items sent before": {
+      "main": [
+        [
+          {
+            "node": "Build prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

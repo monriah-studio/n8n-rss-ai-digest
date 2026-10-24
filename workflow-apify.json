@@ -1,0 +1,327 @@
+{
+  "name": "RSS → AI daily digest (Apify variant)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Variant: RSS via Apify actor\nUses the public Apify actor **monriah-studio/rss-feed-monitor** to fetch feeds, filter keywords and return only items it hasn't returned before (change detection).\n\n1. Create a *Header Auth* credential on **Apify: rss-feed-monitor**: Name `Authorization`, Value `Bearer YOUR_APIFY_TOKEN`.\n2. Then follow steps 1-4 of the main workflow.\n\nCost: the actor is pay-per-result ($1.50 per 1,000 items, checked Oct 24, 2026), billed to your Apify account; Apify's free plan includes monthly credit. The main workflow.json needs no Apify account.",
+        "height": 340,
+        "width": 620
+      },
+      "id": "e4a86010-65f6-5a21-89be-18a5bcd25be0",
+      "name": "Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Want Groq instead?\nDelete the link from Gemini, drag Groq's model connector onto **Summarize with LLM**, and add a Groq API credential (free key at console.groq.com). Only one model can be connected.",
+        "height": 160,
+        "width": 420,
+        "color": 5
+      },
+      "id": "0984b658-0399-5727-9c63-4c7026848796",
+      "name": "Groq note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        600,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "id": "14dcff49-2478-5103-b9b3-5777b7a02978",
+      "name": "Every day at 7:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== EDIT ME =====\n// Feeds to read (RSS 2.0 or Atom). Add or remove lines.\nconst feedUrls = [\n  'https://hnrss.org/frontpage',\n  'https://feeds.bbci.co.uk/news/technology/rss.xml',\n  'https://www.theverge.com/rss/index.xml',\n];\n\nconst config = {\n  // Keep items whose title or snippet contains ANY of these words (case-insensitive).\n  // Leave the list empty to keep everything.\n  keywords: ['AI', 'open source', 'LLM'],\n  // Ignore items older than this many hours (feeds without dates are kept).\n  lookbackHours: 24,\n  // Max items taken from each feed, and max items in one digest.\n  maxItemsPerFeed: 15,\n  maxItemsInDigest: 25,\n  // Email settings (used by the \"Send digest email\" node).\n  digestTitle: 'Daily RSS digest',\n  emailTo: 'you@example.com',\n  emailFrom: 'digest@example.com',\n  // Webhook settings (used by the \"Post to webhook\" node, disabled by default).\n  // Works with Slack/Discord/Teams incoming webhooks or any URL that accepts JSON.\n  webhookUrl: 'https://example.com/your-webhook',\n};\n// ===== END EDIT ME =====\n\n// One item with everything the Apify actor needs.\nreturn [{ json: { feedUrls, ...config } }];"
+      },
+      "id": "df0082c9-124b-530f-81ea-7fa6a502c99d",
+      "name": "Config (edit me)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/monriah-studio~rss-feed-monitor/run-sync-get-dataset-items",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ feedUrls: $json.feedUrls, keywords: $json.keywords, maxItemsPerFeed: $json.maxItemsPerFeed, onlyNewSinceLastRun: true, stateStoreName: 'n8n-rss-ai-digest', includeContent: false }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "18aedd0b-e9b2-51a3-b57d-a019f34584e1",
+      "name": "Apify: rss-feed-monitor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Map Apify rss-feed-monitor results to the digest format.\n// The actor already filtered by keyword and returned only new items.\nconst cfg = $('Config (edit me)').first().json;\nconst cutoff = Date.now() - (Number(cfg.lookbackHours) || 24) * 3600 * 1000;\nconst seen = new Set();\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json;\n  if (!j.link || !j.title) continue;\n  if (seen.has(j.link)) continue;\n  const ts = j.publishedAt ? Date.parse(j.publishedAt) : NaN;\n  if (!Number.isNaN(ts) && ts < cutoff) continue;\n  seen.add(j.link);\n  const source = j.feedTitle || ((String(j.link).match(/^https?:\\/\\/([^\\/?#]+)/i) || [])[1] || '').replace(/^www\\./, '');\n  out.push({ json: { title: j.title, link: j.link, source, published: Number.isNaN(ts) ? null : new Date(ts).toISOString(), snippet: String(j.description || '').slice(0, 400) } });\n}\nreturn out;"
+      },
+      "id": "a182c8dd-acf9-5f27-affc-6402cd0530ff",
+      "name": "Map Apify items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sort newest first, cap the digest size and build one prompt for the LLM.\nconst cfg = $('Config (edit me)').first().json;\nconst items = $input.all().map((i) => i.json)\n  .sort((a, b) => (b.published || '').localeCompare(a.published || ''))\n  .slice(0, Number(cfg.maxItemsInDigest) || 25);\nconst list = items.map((it, n) => `[${n + 1}] ${it.title} (${it.source})\\n${it.snippet}`).join('\\n\\n');\nconst prompt = `Here are ${items.length} new items from my RSS feeds.\\n\\n${list}\\n\\n` +\n  `Write a short daily digest in plain text:\\n` +\n  `1. One sentence on the main theme of the day.\\n` +\n  `2. Then 3-7 bullet points (\"- \"), each grouping related items and citing them by number like [2][5].\\n` +\n  `Do not invent facts that are not in the items. No preamble.`;\nreturn [{ json: { prompt, items, count: items.length } }];"
+      },
+      "id": "82bb8631-3f3a-54ab-989a-e2895f0491ae",
+      "name": "Build prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a concise news editor. You summarise RSS items accurately, group related stories, and cite item numbers. You never add facts that are not in the items."
+            }
+          ]
+        }
+      },
+      "id": "ab793d2b-7b8f-521e-ab0e-d1af5f39c5ee",
+      "name": "Summarize with LLM",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "a8e78197-e849-55c3-914e-b080e61f1039",
+      "name": "Gemini (free tier)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        640,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "9e187917-1211-5e0a-891b-3eef60a26584",
+      "name": "Groq (free tier, optional)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        820,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the LLM text + item list into an HTML email and a JSON payload.\nconst cfg = $('Config (edit me)').first().json;\nconst { items, count } = $('Build prompt').first().json;\nconst summary = String($json.text || $json.output || '').trim();\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst date = new Date().toISOString().slice(0, 10);\n\nconst lines = summary.split('\\n').map((l) => l.trim()).filter(Boolean);\nlet html = `<h2>${esc(cfg.digestTitle)} - ${date}</h2>`;\nlet inList = false;\nfor (const l of lines) {\n  if (/^[-*•]\\s+/.test(l)) {\n    if (!inList) { html += '<ul>'; inList = true; }\n    html += `<li>${esc(l.replace(/^[-*•]\\s+/, ''))}</li>`;\n  } else {\n    if (inList) { html += '</ul>'; inList = false; }\n    html += `<p>${esc(l)}</p>`;\n  }\n}\nif (inList) html += '</ul>';\nhtml += `<h3>Sources (${count})</h3><ol>` +\n  items.map((it) => `<li><a href=\"${esc(it.link)}\">${esc(it.title)}</a> <small>(${esc(it.source)})</small></li>`).join('') +\n  '</ol><p><small>Sent by n8n-rss-ai-digest.</small></p>';\n\nconst text = `${cfg.digestTitle} - ${date}\\n\\n${summary}\\n\\nSources:\\n` +\n  items.map((it, n) => `[${n + 1}] ${it.title} - ${it.link}`).join('\\n');\n\nreturn [{ json: {\n  subject: `${cfg.digestTitle} - ${date} (${count} items)`,\n  html, text, summary, items, date,\n  emailTo: cfg.emailTo, emailFrom: cfg.emailFrom, webhookUrl: cfg.webhookUrl,\n} }];"
+      },
+      "id": "b499a7f3-b065-577a-b6e1-6c1de122bc53",
+      "name": "Format digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.emailFrom }}",
+        "toEmail": "={{ $json.emailTo }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "both",
+        "text": "={{ $json.text }}",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "5b25e017-c218-5cab-ab49-7b49edc162b5",
+      "name": "Send digest email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1240,
+        200
+      ],
+      "webhookId": "eeb275a0-52d5-5137-a2cc-e26eb08b8523"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.webhookUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text, content: $json.text.slice(0, 1900), subject: $json.subject, summary: $json.summary, items: $json.items, date: $json.date }) }}",
+        "options": {}
+      },
+      "id": "e431e51c-bb5d-5c1c-8b52-0b90a156d675",
+      "name": "Post to webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1240,
+        400
+      ],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Build prompt": {
+      "main": [
+        [
+          {
+            "node": "Summarize with LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize with LLM": {
+      "main": [
+        [
+          {
+            "node": "Format digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini (free tier)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarize with LLM",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format digest": {
+      "main": [
+        [
+          {
+            "node": "Send digest email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post to webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every day at 7:00": {
+      "main": [
+        [
+          {
+            "node": "Config (edit me)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config (edit me)": {
+      "main": [
+        [
+          {
+            "node": "Apify: rss-feed-monitor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify: rss-feed-monitor": {
+      "main": [
+        [
+          {
+            "node": "Map Apify items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Apify items": {
+      "main": [
+        [
+          {
+            "node": "Build prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
